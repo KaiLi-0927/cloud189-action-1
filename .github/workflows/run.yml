@@ -1,13 +1,11 @@
-name: 签到
+name: 天翼云盘签到
 
 on:
   push:
     branches: [ master ]
-  pull_request:
-    branches: [ master ]
   schedule:
-    - cron: '0 6,14 * * *'  # 北京时间 14:00、22:00（UTC+8，UTC时间对应6:00、14:00）
-  workflow_dispatch:  # 新增：支持手动触发，方便测试
+    - cron: '0 14 * * *'  # UTC 14:00 = 北京时间 22:00，每日1次签到
+  workflow_dispatch:  # 支持手动触发测试
   watch:
     types: started
 
@@ -18,17 +16,16 @@ jobs:
 
     steps:
       - name: 拉取代码
-        uses: actions/checkout@v4  # 升级到最新稳定版v4，替代旧版v2
+        uses: actions/checkout@v4
 
       - name: 初始化Python
-        uses: actions/setup-python@v5  # 升级到最新稳定版v5
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.11'  # 替换3.7为长期支持版3.11，彻底解决版本找不到问题
-          cache: 'pip'  # 新增：开启pip缓存，加速依赖安装
+          python-version: '3.11'
+          cache: 'pip'
 
-      - name: 签到
+      - name: 执行签到
         run: |
-          # 升级pip到最新版，避免依赖安装报错
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           
@@ -54,14 +51,15 @@ jobs:
           pwd_num=${#pwd_list[*]}
 
           if [ $user_num != $pwd_num ];then
-          echo "账号和密码个数不对应"
+          echo "❌ 账号和密码个数不对应"
           exit 1
           else
-          echo "共有 $user_num 个账号，即将开始签到"
+          echo "ℹ️ 共有 $user_num 个账号，即将开始签到"
           fi
 
           for ((i=0;i<$user_num;i++))
           do
+          echo "ℹ️ 正在执行第 $((i+1)) 个账号签到"
           python checkin.py <<EOF
           ${user_list[$i]}
           ${pwd_list[$i]}
