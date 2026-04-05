@@ -1,178 +1,140 @@
-import requests
-import time
-import datetime
+# -*- coding: utf-8 -*-
 import re
-import rsa
-import json
-import base64
-from urllib import parse
+import time
+import requests
+from bs4 import BeautifulSoup
 
-s = requests.Session()
+# 全局配置
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+    "Referer": "https://cloud.189.cn/",
+    "Origin": "https://cloud.189.cn",
+    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Connection": "keep-alive"
+}
+SESSION = requests.Session()
+SESSION.headers.update(HEADERS)
 
-username = ""
-password = ""
+def get_login_page():
+    """获取登录页，提取captchaToken等参数"""
+    url = "https://cloud.189.cn/web/login.html"
+    try:
+        resp = SESSION.get(url, timeout=15)
+        resp.raise_for_status()
+        return resp.text
+    except Exception as e:
+        print(f"❌ 获取登录页失败: {str(e)}")
+        return None
 
-if(username == "" or password == ""):
-    username = input("账号：")
-    password = input("密码：")
+def extract_captcha_token(html):
+    """从登录页提取captchaToken，适配新版页面结构"""
+    # 多正则兜底匹配，覆盖不同页面格式
+    patterns = [
+        r'captchaToken.*?value="([^"]+)"',
+        r"captchaToken' value='([^']+)'",
+        r'name="captchaToken".*?value="([^"]+)"'
+    ]
+    for pattern in patterns:
+        token_list = re.findall(pattern, html, re.S)
+        if token_list:
+            return token_list[0].strip()
+    print("❌ 未匹配到captchaToken，页面结构已更新或触发风控")
+    print("⚠️ 页面内容片段（用于排查）：", html[:1000])
+    return None
 
+def login(username, password, captcha_token):
+    """执行登录"""
+    url = "https://cloud.189.cn/api/portal/loginWithPwd.action"
+    data = {
+        "userName": username,
+        "password": password,
+        "captchaToken": captcha_token,
+        "validateCode": "",
+        "rememberMe": 1
+    }
+    try:
+        resp = SESSION.post(url, data=data, timeout=15)
+        resp.raise_for_status()
+        result = resp.json()
+        if result.get("result") == 0:
+            print(f"✅ 账号 {username} 登录成功")
+            return True
+        else:
+            print(f"❌ 账号 {username} 登录失败: {result.get('msg', '未知错误')}")
+            return False
+    except Exception as e:
+        print(f"❌ 登录请求异常: {str(e)}")
+        return False
+
+def checkin():
+    """执行签到"""
+    url = "https://cloud.189.cn/api/portal/signIn.action"
+    try:
+        resp = SESSION.get(url, timeout=15)
+        resp.raise_for_status()
+        result = resp.json()
+        if result.get("result") == 0:
+            print(f"✅ 签到成功！本次获得空间: {result.get('data', {}).get('size', 0)}MB")
+            print(f"ℹ️ 累计签到天数: {result.get('data', {}).get('days', 0)}天")
+            return True
+        else:
+            print(f"❌ 签到失败: {result.get('msg', '未知错误')}")
+            return False
+    except Exception as e:
+        print(f"❌ 签到请求异常: {str(e)}")
+        return False
 
 def main():
-    login(username, password)
-    rand = str(round(time.time()*1000))
-    surl = f'https://api.cloud.189.cn/mkt/userSign.action?rand={rand}&clientType=TELEANDROID&version=8.6.3&model=SM-G930K'
-    url = f'https://m.cloud.189.cn/v2/drawPrizeMarketDetails.action?taskId=TASK_SIGNIN&activityId=ACT_SIGNIN'
-    url2 = f'https://m.cloud.189.cn/v2/drawPrizeMarketDetails.action?taskId=TASK_SIGNIN_PHOTOS&activityId=ACT_SIGNIN'
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Linux; Android 5.1.1; SM-G930K Build/NRD90M; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/74.0.3729.136 Mobile Safari/537.36 Ecloud/8.6.3 Android/22 clientId/355325117317828 clientModel/SM-G930K imsi/460071114317824 clientChannelId/qq proVersion/1.0.6',
-        "Referer": "https://m.cloud.189.cn/zhuanti/2016/sign/index.jsp?albumBackupOpened=1",
-        "Host": "m.cloud.189.cn",
-        "Accept-Encoding": "gzip, deflate",
-    }
-    response = s.get(surl, headers=headers)
-    netdiskBonus = response.json()['netdiskBonus']
-    if(response.json()['isSign'] == "false"):
-        print(f"未签到，签到获得{netdiskBonus}M空间")
-        signStr = f"未签到，签到获得{netdiskBonus}M空间"
+    print("="*50)
+    print("📅 天翼云盘自动签到任务启动")
+    print("="*50)
+
+    # 读取账号密码（从标准输入，适配GitHub Actions的here-doc）
+    username = input().strip()
+    password = input().strip()
+
+    if not username or not password:
+        print("❌ 账号或密码为空，终止任务")
+        return
+
+    # 步骤1：获取登录页
+    html = get_login_page()
+    if not html:
+        return
+
+    # 步骤2：提取captchaToken
+    captcha_token = extract_captcha_token(html)
+    if not captcha_token:
+        return
+
+    # 步骤3：登录（带重试）
+    login_success = False
+    for retry in range(3):
+        print(f"\n🔄 第 {retry+1} 次尝试登录...")
+        if login(username, password, captcha_token):
+            login_success = True
+            break
+        time.sleep(3)
+    if not login_success:
+        print("❌ 3次登录均失败，终止任务")
+        return
+
+    # 步骤4：签到（带重试）
+    checkin_success = False
+    for retry in range(2):
+        print(f"\n🔄 第 {retry+1} 次尝试签到...")
+        if checkin():
+            checkin_success = True
+            break
+        time.sleep(3)
+
+    print("\n" + "="*50)
+    if checkin_success:
+        print("🎉 任务执行完成，签到成功！")
     else:
-        print(f"已经签到过了，签到获得{netdiskBonus}M空间")
-        signStr = f"已经签到过了，签到获得{netdiskBonus}M空间"
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Linux; Android 5.1.1; SM-G930K Build/NRD90M; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/74.0.3729.136 Mobile Safari/537.36 Ecloud/8.6.3 Android/22 clientId/355325117317828 clientModel/SM-G930K imsi/460071114317824 clientChannelId/qq proVersion/1.0.6',
-        "Referer": "https://m.cloud.189.cn/zhuanti/2016/sign/index.jsp?albumBackupOpened=1",
-        "Host": "m.cloud.189.cn",
-        "Accept-Encoding": "gzip, deflate",
-    }
-    response = s.get(url, headers=headers)
-    cjStr1=''
-    if ("errorCode" in response.text):
-        print(response.text)
-    else:
-        description = response.json()['description']
-        print(f"抽奖获得{description}")
-        cjStr1 = f"抽奖获得{description}"
-
-    response = s.get(url2, headers=headers)
-    cjStr2=''
-    if ("errorCode" in response.text):
-        print(response.text)
-    else:
-        description = response.json()['description']
-        print(f"抽奖获得{description}")
-        cjStr2 = f"抽奖获得{description}"
-
-    now_time = datetime.datetime.now()
-    bj_time = now_time + datetime.timedelta(hours=8)
-    desp = f"""
-    ------
-    ### 🚁Now：
-    ```
-    {bj_time.strftime("%Y-%m-%d %H:%M:%S %p")}
-    ```
-    ### ✨签到：
-    ```
-    {signStr}
-    ```
-
-    ### 🚀抽奖:
-    ```
-    {cjStr1}
-    {cjStr2}
-    ```
-    """
-    requests.post('https://sc.ftqq.com/SCU74663T20ed2886a458ab9e3be21f3de4e8fd965e0b13de3ff1b.send', data={
-    'text':bj_time.strftime("%Y-%m-%d %H:%M:%S %p")+'天翼云盘打卡',
-    'desp':desp
-})
-
-BI_RM = list("0123456789abcdefghijklmnopqrstuvwxyz")
-
-
-def int2char(a):
-    return BI_RM[a]
-
-
-b64map = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
-
-
-def b64tohex(a):
-    d = ""
-    e = 0
-    c = 0
-    for i in range(len(a)):
-        if list(a)[i] != "=":
-            v = b64map.index(list(a)[i])
-            if 0 == e:
-                e = 1
-                d += int2char(v >> 2)
-                c = 3 & v
-            elif 1 == e:
-                e = 2
-                d += int2char(c << 2 | v >> 4)
-                c = 15 & v
-            elif 2 == e:
-                e = 3
-                d += int2char(c)
-                d += int2char(v >> 2)
-                c = 3 & v
-            else:
-                e = 0
-                d += int2char(c << 2 | v >> 4)
-                d += int2char(15 & v)
-    if e == 1:
-        d += int2char(c << 2)
-    return d
-
-
-def rsa_encode(j_rsakey, string):
-    rsa_key = f"-----BEGIN PUBLIC KEY-----\n{j_rsakey}\n-----END PUBLIC KEY-----"
-    pubkey = rsa.PublicKey.load_pkcs1_openssl_pem(rsa_key.encode())
-    result = b64tohex(
-        (base64.b64encode(rsa.encrypt(f'{string}'.encode(), pubkey))).decode())
-    return result
-
-
-def calculate_md5_sign(params):
-    return hashlib.md5('&'.join(sorted(params.split('&'))).encode('utf-8')).hexdigest()
-
-
-def login(username, password):
-    url = "https://cloud.189.cn/udb/udb_login.jsp?pageId=1&redirectURL=/main.action"
-    r = s.get(url)
-    captchaToken = re.findall(r"captchaToken' value='(.+?)'", r.text)[0]
-    lt = re.findall(r'lt = "(.+?)"', r.text)[0]
-    returnUrl = re.findall(r"returnUrl = '(.+?)'", r.text)[0]
-    paramId = re.findall(r'paramId = "(.+?)"', r.text)[0]
-    j_rsakey = re.findall(r'j_rsaKey" value="(\S+)"', r.text, re.M)[0]
-    s.headers.update({"lt": lt})
-
-    username = rsa_encode(j_rsakey, username)
-    password = rsa_encode(j_rsakey, password)
-    url = "https://open.e.189.cn/api/logbox/oauth2/loginSubmit.do"
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:74.0) Gecko/20100101 Firefox/76.0',
-        'Referer': 'https://open.e.189.cn/',
-    }
-    data = {
-        "appKey": "cloud",
-        "accountType": '01',
-        "userName": f"{{RSA}}{username}",
-        "password": f"{{RSA}}{password}",
-        "validateCode": "",
-        "captchaToken": captchaToken,
-        "returnUrl": returnUrl,
-        "mailSuffix": "@189.cn",
-        "paramId": paramId
-    }
-    r = s.post(url, data=data, headers=headers, timeout=5)
-    if(r.json()['result'] == 0):
-        print(r.json()['msg'])
-    else:
-        print(r.json()['msg'])
-    redirect_url = r.json()['toUrl']
-    r = s.get(redirect_url)
-    return s
-
+        print("⚠️ 任务执行完成，签到失败，请检查账号状态")
+    print("="*50)
 
 if __name__ == "__main__":
     main()
